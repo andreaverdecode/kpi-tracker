@@ -1,4 +1,4 @@
-const CACHE = 'kpi-v1';
+const CACHE = 'kpi-v2';
 const ASSETS = ['/', '/index.html', '/manifest.json', '/icon.svg'];
 
 self.addEventListener('install', e => {
