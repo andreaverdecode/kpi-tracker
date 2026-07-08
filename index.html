@@ -108,6 +108,7 @@
       color: var(--muted);
     }
     .badge.done { background: rgba(48,209,88,.15); color: var(--green); }
+    .badge.skip { background: rgba(142,142,147,.15); color: var(--muted); }
 
     /* ── BIG RING ── */
     .big-ring { flex-shrink: 0; }
@@ -139,6 +140,27 @@
     .kpi-right { text-align: right; flex-shrink: 0; }
     .kpi-pct { font-size: 20px; font-weight: 700; }
     .kpi-hint { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .kpi-card.skipped { opacity: .55; }
+    .kpi-skip-btn {
+      background: var(--surface2); border: none;
+      width: 28px; height: 28px; border-radius: 9px;
+      color: var(--muted); font-size: 13px;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; cursor: pointer; transition: all .15s;
+    }
+    .kpi-skip-btn:active { transform: scale(.9); }
+    .kpi-skip-btn.active { background: rgba(255,69,58,.18); color: var(--red); }
+    .skip-day-btn {
+      width: 100%; margin-top: 12px; padding: 10px;
+      border-radius: var(--rs); border: 1px dashed var(--border);
+      background: none; color: var(--muted);
+      font-size: 12px; font-weight: 600; cursor: pointer;
+      transition: all .15s;
+    }
+    .skip-day-btn.active {
+      border-style: solid; border-color: var(--red);
+      color: var(--red); background: rgba(255,69,58,.08);
+    }
 
     /* ── PERIOD TOGGLE ── */
     .period-toggle {
@@ -186,6 +208,9 @@
     .bar-chart { display: flex; align-items: flex-end; gap: 4px; height: 80px; }
     .bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; height: 100%; justify-content: flex-end; }
     .bar { width: 100%; border-radius: 4px 4px 0 0; min-height: 3px; transition: height .4s ease; }
+    .bar.bar-skip {
+      background: repeating-linear-gradient(45deg, var(--surface2), var(--surface2) 3px, var(--border) 3px, var(--border) 6px) !important;
+    }
     .bar-lbl { font-size: 9px; color: var(--muted); }
     .today-bar { outline: 2px solid rgba(255,255,255,.25); outline-offset: 1px; border-radius: 4px 4px 0 0; }
     .chart-avg {
@@ -485,13 +510,15 @@ const DEFAULTS = [
 const COLORS = ['#635bff','#ff6584','#30d158','#ff9f0a','#0ea5e9','#f59e0b','#ec4899','#06b6d4'];
 
 function load() {
-  let data = { kpis: DEFAULTS, logs: {} };
+  let data = { kpis: DEFAULTS, logs: {}, daySkips: {}, kpiSkips: {} };
   try { const s = localStorage.getItem(SK); if (s) data = JSON.parse(s); } catch(e){}
   // migrazione: i KPI creati prima dell'introduzione di type/mode sono numerici "almeno"
   data.kpis.forEach(k => {
     if (!k.type) k.type = 'number';
     if (!k.mode) k.mode = 'atleast';
   });
+  if (!data.daySkips) data.daySkips = {};
+  if (!data.kpiSkips) data.kpiSkips = {};
   return data;
 }
 function save() { localStorage.setItem(SK, JSON.stringify(S)); }
@@ -519,6 +546,24 @@ function setLog(date, id, v) {
   S.logs[date][id] = v; save();
 }
 
+function isDaySkipped(date) { return !!S.daySkips[date]; }
+
+function toggleDaySkip(date) {
+  if (S.daySkips[date]) delete S.daySkips[date];
+  else S.daySkips[date] = true;
+  save();
+}
+
+function isKpiSkipped(date, id) { return !!(S.kpiSkips[date] && S.kpiSkips[date][id]); }
+
+function toggleKpiSkip(date, id) {
+  if (!S.kpiSkips[date]) S.kpiSkips[date] = {};
+  if (S.kpiSkips[date][id]) delete S.kpiSkips[date][id];
+  else S.kpiSkips[date][id] = true;
+  if (!Object.keys(S.kpiSkips[date]).length) delete S.kpiSkips[date];
+  save();
+}
+
 function completion(kpi, date) {
   const v = getLog(date, kpi.id);
   if (v === null) return 0;
@@ -544,11 +589,13 @@ function valStr(kpi, v) {
 }
 
 function dayPct(date) {
-  if (!S.kpis.length) return 0;
-  return S.kpis.reduce((a, k) => a + completion(k, date), 0) / S.kpis.length;
+  if (isDaySkipped(date)) return null;
+  const active = S.kpis.filter(k => !isKpiSkipped(date, k.id));
+  if (!active.length) return null;
+  return active.reduce((a, k) => a + completion(k, date), 0) / active.length;
 }
 
-function pctColor(p) { return p >= .8 ? 'var(--green)' : p >= .5 ? 'var(--orange)' : 'var(--accent)'; }
+function pctColor(p) { return p >= .8 ? 'var(--green)' : p >= .5 ? 'var(--orange)' : 'var(--red)'; }
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
 
@@ -586,6 +633,19 @@ function shiftDay(n) {
   renderToday();
 }
 
+function toggleDaySkipUI(date) {
+  toggleDaySkip(date);
+  renderToday();
+  if (view==='stats') renderStats();
+}
+
+function toggleKpiSkipUI(e, id) {
+  e.stopPropagation();
+  toggleKpiSkip(selDate, id);
+  renderToday();
+  if (view==='stats') renderStats();
+}
+
 function renderToday() {
   if (selDate > today()) selDate = today();
   const d = selDate;
@@ -595,11 +655,14 @@ function renderToday() {
   let title = isToday ? 'Oggi' : isYest ? 'Ieri'
     : new Date(d+'T12:00:00').toLocaleDateString('it-IT',{weekday:'long'});
   title = title.charAt(0).toUpperCase() + title.slice(1);
+  const daySkipped = isDaySkipped(d);
   const ov = dayPct(d);
-  const color = pctColor(ov);
+  const color = ov === null ? 'var(--muted)' : pctColor(ov);
   const dateStr = new Date(d+'T12:00:00').toLocaleDateString('it-IT',{weekday:'long',day:'numeric',month:'long'});
 
   const badges = S.kpis.map(k => {
+    const skipped = daySkipped || isKpiSkipped(d, k.id);
+    if (skipped) return `<span class="badge skip">${k.icon} ⏭ saltato</span>`;
     const c = completion(k,d);
     return `<span class="badge ${c>=1?'done':''}">${k.icon} ${Math.round(c*100)}%</span>`;
   }).join('');
@@ -607,29 +670,36 @@ function renderToday() {
   const summaryCard = `
     <div class="summary-card">
       <div class="summary-text">
-        <div class="summary-pct" style="color:${color}">${Math.round(ov*100)}%</div>
-        <div class="summary-label">completato ${isToday ? 'oggi' : isYest ? 'ieri' : ''}</div>
+        <div class="summary-pct" style="color:${color}">${ov === null ? '—' : Math.round(ov*100)+'%'}</div>
+        <div class="summary-label">${daySkipped ? 'giornata saltata' : ov === null ? 'nessun KPI conteggiato' : 'completato ' + (isToday ? 'oggi' : isYest ? 'ieri' : '')}</div>
         <div class="summary-badges">${badges}</div>
       </div>
-      <div class="big-ring">${ring(100,9,ov,color)}</div>
+      <div class="big-ring">${ring(100,9,ov ?? 0,color)}</div>
     </div>`;
 
+  const skipDayBtn = `
+    <button class="skip-day-btn ${daySkipped?'active':''}" onclick="toggleDaySkipUI('${d}')">
+      ${daySkipped ? '🏖 Giornata saltata — tocca per riattivare' : '🏖 Salta questa giornata (es. vacanza)'}
+    </button>`;
+
   const cards = S.kpis.map(kpi => {
+    const skipped = daySkipped || isKpiSkipped(d, kpi.id);
     const c = completion(kpi, d);
     const v = getLog(d, kpi.id);
     const col = kpi.color;
     return `
-      <div class="kpi-card" onclick="openLog('${kpi.id}')">
+      <div class="kpi-card ${skipped?'skipped':''}" onclick="openLog('${kpi.id}')">
         <div class="kpi-icon-wrap" style="background:${col}22">${kpi.icon}</div>
         <div class="kpi-body">
           <div class="kpi-name">${kpi.name}</div>
-          <div class="kpi-val">${v !== null ? valStr(kpi, v) : 'Tocca per registrare'}</div>
-          <div class="prog-bar"><div class="prog-fill" style="width:${c*100}%;background:${col}"></div></div>
+          <div class="kpi-val">${skipped ? 'Saltato — non conteggiato' : v !== null ? valStr(kpi, v) : 'Tocca per registrare'}</div>
+          <div class="prog-bar"><div class="prog-fill" style="width:${skipped?0:c*100}%;background:${col}"></div></div>
         </div>
         <div class="kpi-right">
-          <div class="kpi-pct" style="color:${col}">${Math.round(c*100)}%</div>
-          <div class="kpi-hint">${c>=1?'✓ ok':targetStr(kpi)}</div>
+          <div class="kpi-pct" style="color:${skipped?'var(--muted)':col}">${skipped ? '–' : Math.round(c*100)+'%'}</div>
+          <div class="kpi-hint">${skipped ? 'saltato' : c>=1?'✓ ok':targetStr(kpi)}</div>
         </div>
+        <button class="kpi-skip-btn ${isKpiSkipped(d,kpi.id)?'active':''}" onclick="toggleKpiSkipUI(event,'${kpi.id}')" title="Salta questo KPI per oggi">${isKpiSkipped(d,kpi.id)?'↩':'⏭'}</button>
       </div>`;
   }).join('');
 
@@ -641,6 +711,7 @@ function renderToday() {
         <button class="day-btn" onclick="shiftDay(1)" ${isToday?'disabled':''} title="Giorno successivo">›</button>
       </div>
       <div class="sub">${dateStr}</div>
+      ${S.kpis.length ? skipDayBtn : ''}
     </div>
     ${S.kpis.length ? summaryCard + '<div class="kpi-grid">'+cards+'</div>'
       : '<div class="empty"><div class="ei">📊</div><p>Nessun KPI configurato.<br>Vai in Gestione per aggiungerne uno.</p></div>'}`;
@@ -654,36 +725,52 @@ function renderStats() {
   const td = today();
 
   const overallBars = days.map((d, i) => {
-    const p = dayPct(d)*100;
+    const dp = dayPct(d);
     const lbl = period==='week' ? itDay(d) : (i%5===0 ? new Date(d+'T12:00:00').getDate() : '');
-    const col = p>=80?'var(--green)':p>=50?'var(--orange)':p>0?'var(--accent)':'var(--border)';
     const isTod = d===td;
+    if (dp === null) {
+      return `<div class="bar-col">
+        <div class="bar bar-skip ${isTod?'today-bar':''}" style="height:30%" title="Saltato"></div>
+        <span class="bar-lbl">${lbl}</span>
+      </div>`;
+    }
+    const p = dp*100;
+    const col = p>=80?'var(--green)':p>=50?'var(--orange)':p>0?'var(--red)':'var(--border)';
     return `<div class="bar-col">
       <div class="bar ${isTod?'today-bar':''}" style="height:${Math.max(p,3)}%;background:${col}"></div>
       <span class="bar-lbl">${lbl}</span>
     </div>`;
   }).join('');
 
-  const avgAll = days.reduce((a,d)=>a+dayPct(d)*100,0)/days.length;
+  const validDayPcts = days.map(d=>dayPct(d)).filter(p=>p!==null);
+  const avgAll = validDayPcts.length ? validDayPcts.reduce((a,b)=>a+b*100,0)/validDayPcts.length : null;
 
   const kpiCards = S.kpis.map(kpi => {
-    const vals = days.map(d => completion(kpi,d)*100);
-    const avg = vals.reduce((a,b)=>a+b,0)/vals.length;
-    const bars = vals.map((v,i) => {
+    const validVals = [];
+    const bars = days.map((d,i) => {
       const lbl = period==='week' ? itDay(days[i]) : (i%5===0 ? new Date(days[i]+'T12:00:00').getDate() : '');
-      const isTod = days[i]===td;
+      const isTod = d===td;
+      if (isDaySkipped(d) || isKpiSkipped(d, kpi.id)) {
+        return `<div class="bar-col">
+          <div class="bar bar-skip ${isTod?'today-bar':''}" style="height:30%" title="Saltato"></div>
+          <span class="bar-lbl">${lbl}</span>
+        </div>`;
+      }
+      const v = completion(kpi,d)*100;
+      validVals.push(v);
       return `<div class="bar-col">
         <div class="bar ${isTod?'today-bar':''}" style="height:${Math.max(v,3)}%;background:${kpi.color};opacity:${isTod?1:.75}"></div>
         <span class="bar-lbl">${lbl}</span>
       </div>`;
     }).join('');
+    const avg = validVals.length ? validVals.reduce((a,b)=>a+b,0)/validVals.length : null;
     return `
       <div class="chart-card">
         <div class="chart-title">${kpi.icon} ${kpi.name}</div>
         <div class="bar-chart">${bars}</div>
         <div class="chart-avg">
           <span class="label">Media periodo</span>
-          <span class="val" style="color:${kpi.color}">${Math.round(avg)}%</span>
+          <span class="val" style="color:${avg===null?'var(--muted)':kpi.color}">${avg===null?'–':Math.round(avg)+'%'}</span>
         </div>
       </div>`;
   }).join('');
@@ -699,7 +786,7 @@ function renderStats() {
       <div class="bar-chart">${overallBars}</div>
       <div class="chart-avg">
         <span class="label">Media periodo</span>
-        <span class="val" style="color:${pctColor(avgAll/100)}">${Math.round(avgAll)}%</span>
+        <span class="val" style="color:${avgAll===null?'var(--muted)':pctColor(avgAll/100)}">${avgAll===null?'–':Math.round(avgAll)+'%'}</span>
       </div>
     </div>
     ${S.kpis.length ? kpiCards : ''}`;
@@ -889,6 +976,10 @@ function deleteKPI(id) {
   if (!confirm('Eliminare questo KPI e tutti i relativi dati?')) return;
   S.kpis = S.kpis.filter(k=>k.id!==id);
   Object.values(S.logs).forEach(d=>delete d[id]);
+  Object.entries(S.kpiSkips).forEach(([date, ids]) => {
+    delete ids[id];
+    if (!Object.keys(ids).length) delete S.kpiSkips[date];
+  });
   save(); renderManage(); renderToday();
   toast('KPI eliminato');
 }
