@@ -516,6 +516,8 @@ function load() {
   data.kpis.forEach(k => {
     if (!k.type) k.type = 'number';
     if (!k.mode) k.mode = 'atleast';
+    // migrazione: i KPI creati prima del campo createdAt contavano già da sempre
+    if (!k.createdAt) k.createdAt = '1970-01-01';
   });
   if (!data.daySkips) data.daySkips = {};
   if (!data.kpiSkips) data.kpiSkips = {};
@@ -588,9 +590,11 @@ function valStr(kpi, v) {
   return (kpi.type === 'time' ? fmtHM(v) : v) + ' / ' + targetStr(kpi);
 }
 
+function kpiExistsOn(kpi, date) { return date >= kpi.createdAt; }
+
 function dayPct(date) {
   if (isDaySkipped(date)) return null;
-  const active = S.kpis.filter(k => !isKpiSkipped(date, k.id));
+  const active = S.kpis.filter(k => kpiExistsOn(k, date) && !isKpiSkipped(date, k.id));
   if (!active.length) return null;
   return active.reduce((a, k) => a + completion(k, date), 0) / active.length;
 }
@@ -659,8 +663,9 @@ function renderToday() {
   const ov = dayPct(d);
   const color = ov === null ? 'var(--muted)' : pctColor(ov);
   const dateStr = new Date(d+'T12:00:00').toLocaleDateString('it-IT',{weekday:'long',day:'numeric',month:'long'});
+  const dayKpis = S.kpis.filter(k => kpiExistsOn(k, d));
 
-  const badges = S.kpis.map(k => {
+  const badges = dayKpis.map(k => {
     const skipped = daySkipped || isKpiSkipped(d, k.id);
     if (skipped) return `<span class="badge skip">${k.icon} ⏭ saltato</span>`;
     const c = completion(k,d);
@@ -682,7 +687,7 @@ function renderToday() {
       ${daySkipped ? '🏖 Giornata saltata — tocca per riattivare' : '🏖 Salta questa giornata (es. vacanza)'}
     </button>`;
 
-  const cards = S.kpis.map(kpi => {
+  const cards = dayKpis.map(kpi => {
     const skipped = daySkipped || isKpiSkipped(d, kpi.id);
     const c = completion(kpi, d);
     const v = getLog(d, kpi.id);
@@ -711,9 +716,10 @@ function renderToday() {
         <button class="day-btn" onclick="shiftDay(1)" ${isToday?'disabled':''} title="Giorno successivo">›</button>
       </div>
       <div class="sub">${dateStr}</div>
-      ${S.kpis.length ? skipDayBtn : ''}
+      ${dayKpis.length ? skipDayBtn : ''}
     </div>
-    ${S.kpis.length ? summaryCard + '<div class="kpi-grid">'+cards+'</div>'
+    ${dayKpis.length ? summaryCard + '<div class="kpi-grid">'+cards+'</div>'
+      : S.kpis.length ? '<div class="empty"><div class="ei">🗓️</div><p>Nessun KPI esisteva ancora in questo giorno.</p></div>'
       : '<div class="empty"><div class="ei">📊</div><p>Nessun KPI configurato.<br>Vai in Gestione per aggiungerne uno.</p></div>'}`;
 }
 
@@ -750,6 +756,12 @@ function renderStats() {
     const bars = days.map((d,i) => {
       const lbl = period==='week' ? itDay(days[i]) : (i%5===0 ? new Date(days[i]+'T12:00:00').getDate() : '');
       const isTod = d===td;
+      if (!kpiExistsOn(kpi, d)) {
+        return `<div class="bar-col">
+          <div class="bar bar-skip ${isTod?'today-bar':''}" style="height:30%" title="Non ancora creato"></div>
+          <span class="bar-lbl">${lbl}</span>
+        </div>`;
+      }
       if (isDaySkipped(d) || isKpiSkipped(d, kpi.id)) {
         return `<div class="bar-col">
           <div class="bar bar-skip ${isTod?'today-bar':''}" style="height:30%" title="Saltato"></div>
@@ -966,7 +978,7 @@ function saveKPI() {
     const i = S.kpis.findIndex(k=>k.id===editId);
     S.kpis[i] = {...S.kpis[i], name, unit, target, icon, color, type, mode};
   } else {
-    S.kpis.push({id:uid(), name, unit, target, icon, color, type, mode});
+    S.kpis.push({id:uid(), name, unit, target, icon, color, type, mode, createdAt: today()});
   }
   save(); close_('ov-kpi'); renderManage(); renderToday();
   toast(editId ? 'KPI aggiornato' : 'KPI aggiunto ✓');
